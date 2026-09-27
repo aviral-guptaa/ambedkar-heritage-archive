@@ -1,0 +1,96 @@
+# syntax=docker/dockerfile:1
+#
+# The kiosk, as a single self-contained image.
+#
+# This bundles the API, the built web interface, PostgreSQL with pgvector, and
+# the job worker into one artefact. That is a deliberate choice for this project:
+# a kiosk at a venue has no network to install anything from, and a single image
+# can be copied onto an SD card and started with one command.
+#
+# The production deployment uses docker-compose.yml instead, which keeps the
+# database as a separate service it can back up.
+
+# ------------------------------------------------------------------ builder --
+FROM docker.io/library/python:3.12-slim-bookworm AS build
+
+ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY apps/api/requirements.txt ./
+RUN pip wheel --wheel-dir /wheels -r requirements.txt
+
+# ------------------------------------------------------------------ frontend --
+FROM docker.io/library/node:22-bookworm-slim AS web
+WORKDIR /build
+COPY apps/web/package.json apps/web/package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+COPY apps/web/ ./
+# The service worker must exist in this build, because a kiosk that cannot fall
+# back to a local copy is not a kiosk.
+RUN npm run build
+
+# ----------------------------------------------------------------- database --
+FROM docker.io/pgvector/pgvector:pg16 AS database
+
+# pgvector must exist before the schema is created, so it is created at image
+# build time rather than on first boot.
+RUN psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+    -c 'CREATE EXTENSION IF NOT EXISTS vector;' \
+    -c 'CREATE EXTENSION IF NOT EXISTS tsvector;'
+
+# -------------------------------------------------------------------- final --
+FROM docker.io/library/python:3.12-slim-bookworm
+
+# ENVIRONMENT=production turns on app/core/production_guard.py, which refuses to
+# start without a real JWT_SECRET. That is deliberate: a kiosk on a museum
+# network is still a public archivist surface, and the shipped signing secret is
+# in the source. Supply it at run time:
+#
+#   docker run -e JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" ...
+#
+# Nothing is baked in here, so a kiosk built from this image fails loudly on
+# first boot with a message saying which variable is missing, rather than coming
+# up quietly signable by anyone.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    ENVIRONMENT=production \
+    DEBUG=false \
+    PATH=/usr/lib/postgresql/16/bin:$PATH
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tesseract-ocr tesseract-ocr-eng tesseract-ocr-hin tesseract-ocr-mar \
+        postgresql-16 postgresql-contrib-16 \
+        ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Unprivileged, because the kiosk displays a corpus it did not author.
+RUN useradd --create-home --uid 10001 archive \
+    && mkdir -p /srv/archive /var/lib/dha/objects /var/lib/dha/var /var/log/dha \
+    && chown -R archive:archive /srv/archive /var/lib/dha /var/log/dha
+
+WORKDIR /srv/archive
+
+COPY --from=build /wheels /wheels
+COPY apps/api/requirements.txt ./
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
+    && rm -rf /wheels
+
+COPY apps/api/alembic.ini ./
+COPY apps/api/alembic/ ./alembic/
+COPY apps/api/app/ ./app/
+COPY apps/api/scripts/ ./scripts/
+COPY apps/api/data/ ./data/
+COPY --from=web /build/dist ./web
+
+USER archive
+EXPOSE 8000 5432
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/api/v1/health || exit 1
+
+CMD ["sh", "-c", "python -m alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --root-path /api"]

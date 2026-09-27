@@ -1,0 +1,19 @@
+.env
+.venv/
+var/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/raw/
+
+# A stray SQLite file once appeared here from a fallback that is no longer
+# reachable. The archive is PostgreSQL-only: SQLite cannot render TSVECTOR or
+# Vector, and a half-built SQLite file is worse than none, because it looks like
+# a database.
+*.db
+apps/api/var/

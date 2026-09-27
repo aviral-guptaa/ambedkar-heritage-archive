@@ -1,0 +1,11 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# A failure anywhere is a failure, including inside third-party fixtures.
+addopts = "-q --strict-markers"
+# The suite creates and drops a throwaway database, so it must never run in
+# parallel against itself. Keep it serial unless a per-test schema is added.
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:pytest_asyncio.*",
+]

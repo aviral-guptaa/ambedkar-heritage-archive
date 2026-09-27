@@ -1,0 +1,88 @@
+# syntax=docker/dockerfile:1
+#
+# A single-service deployment, for platforms that expose one port per service.
+#
+# Render (and Railway, and Fly) can run exactly one listening port per service.
+# The kiosk arrangement in Dockerfile puts nginx and uvicorn in separate
+# containers, which is the better design when you control the machine — nginx
+# terminates TLS and serves assets without waking Python. Here there is no second
+# container to put in front, so uvicorn serves the built interface too, via
+# app/core/spa.py.
+#
+# That is a real trade, stated plainly: static files now pass through Python, so
+# a large asset is slower to serve than it would be behind nginx. For an archive
+# of text this costs nothing worth optimising, and it removes a process.
+
+# ------------------------------------------------------------------ frontend --
+FROM docker.io/library/node:22-bookworm-slim AS web
+WORKDIR /build
+COPY apps/web/package.json apps/web/package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+COPY apps/web/ ./
+RUN npm run build
+
+# ----------------------------------------------------------------- database --
+# The migrations need `vector` to exist before they run, so a Postgres image that
+# already has it is used rather than compiling pgvector at deploy time.
+FROM docker.io/pgvector/pgvector:pg16 AS database
+
+# -------------------------------------------------------------------- final --
+FROM docker.io/library/python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# tesseract is the OCR engine. The rest are what psycopg and the wheel builds
+# need at image build time.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-hin \
+        tesseract-ocr-mar \
+        libpq5 \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /srv/archive
+
+COPY apps/api/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY apps/api/alembic.ini ./
+COPY apps/api/alembic/ ./alembic/
+COPY apps/api/app/ ./app/
+COPY apps/api/scripts/ ./scripts/
+COPY apps/api/data/ ./data/
+COPY --from=web /build/dist ./web
+
+# Unprivileged: this container serves a corpus it did not author.
+RUN useradd --create-home --uid 10001 archive \
+    && mkdir -p /var/lib/dha/objects /var/lib/dha/var /var/log/dha \
+    && chown -R archive:archive /srv/archive /var/lib/dha /var/log/dha
+USER archive
+
+ENV WEB_DIST=/srv/archive/web \
+    LOCAL_STORAGE_PATH=/var/lib/dha/objects \
+    PORT=8000
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PORT}/api/v1/health" || exit 1
+
+# Migrations run before the server starts, so a cold start never serves a schema
+# one version behind. The corpus import is idempotent and skipped once the
+# archive is populated, so this costs nothing on a warm start.
+#
+# One process, foreground, bound to $PORT: a platform that restarts on exit
+# cannot tell a crash from a clean shutdown, and a shell that backgrounds
+# anything makes that impossible to see.
+CMD ["sh", "-c", "\
+    python -m alembic upgrade head && \
+    python scripts/import_corpus.py --path data/speeches.jsonl --publish --if-empty && \
+    exec python -m uvicorn app.main:app \
+        --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --timeout-keep-alive 75 \
+"]

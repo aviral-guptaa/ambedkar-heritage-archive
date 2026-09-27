@@ -1,0 +1,195 @@
+# Continuous integration.
+#
+# The rule this enforces is the one that matters for an archive: the deployment
+# files and the application must agree. `tests/test_deployment_config.py` fails
+# if a Dockerfile, `docker-compose.yml`, `.env.example` or `render.yaml` names
+# a variable the application does not read. That check exists because every one
+# of those files once used `DHA_`-prefixed names for settings that have no
+# prefix, so a container built from them would have started in development mode
+# with the shipped signing secret and looked perfectly healthy.
+#
+# The database service is pgvector rather than plain postgres, because the
+# archive is built on `tsvector`, `pgvector` and `pg_trgm`. A suite that ran
+# against a server without those extensions would not be testing this project.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a branch supersedes the run in flight, which is both cheaper and
+# closer to what the author is waiting for.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: API
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.12, because that is what Dockerfile.render ships. Testing a
+          # version nobody deploys is how a suite stops meaning anything.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/api/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/api/requirements.txt
+          pip install pytest pytest-asyncio psycopg[binary] alembic
+
+      - name: Extensions
+        # The harness creates a throwaway database per run and the migrations
+        # expect both of these to exist in it.
+        run: |
+          for extension in vector pg_trgm; do
+            psql "postgresql://postgres:postgres@localhost:5432/postgres" \
+              -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS $extension"
+          done
+
+      - name: Tests
+        working-directory: apps/api
+        env:
+          # The suite connects over TCP here; locally it uses a unix socket.
+          # One libpq conninfo string serves both — see tests/conftest.py.
+          DHA_TEST_PG_DSN: host=localhost port=5432 dbname=postgres user=postgres password=postgres
+        run: python -m pytest tests -q
+
+      - name: The interface can be built and served from one port
+        # Proves the Render arrangement rather than assuming it: WEB_DIST makes
+        # FastAPI serve the built interface, so the shell, the assets and the
+        # API have to answer on the same port.
+        run: |
+          npm --prefix apps/web ci
+          npm --prefix apps/web run build
+          python - <<'PY'
+          import os, pathlib, sys
+          sys.path.insert(0, "apps/api")
+          os.environ["WEB_DIST"] = str(pathlib.Path("apps/web/dist").resolve())
+          from app.core.spa import mount_interface
+          from fastapi import FastAPI
+          from fastapi.testclient import TestClient
+
+          app = FastAPI()
+
+          @app.get("/api/v1/health")
+          def health():
+              return {"status": "ok"}
+
+          # After the routes, never before: a catch-all added first answers
+          # every API path itself. See the warning in app/core/spa.py.
+          mounted = mount_interface(app, pathlib.Path(os.environ["WEB_DIST"]), "/api/v1")
+          assert mounted, "the built interface was not mounted"
+
+          client = TestClient(app)
+          assert client.get("/").headers["content-type"].startswith("text/html")
+          assert client.get("/manuscripts").status_code == 200
+          assert client.get("/api/v1/health").json() == {"status": "ok"}
+          assert client.get("/api/v1/nope").status_code == 404
+          assert client.get("/missing.js").status_code == 404
+          print("one port serves the interface and the API")
+          PY
+
+  web:
+    name: Interface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+        working-directory: apps/web
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: apps/web
+
+      - name: Tests
+        run: npm test
+        working-directory: apps/web
+
+      - name: Build
+        run: npm run build
+        working-directory: apps/web
+
+      - name: The service worker and the offline page are in the build
+        # A missing service worker means the offline promise is not kept, and it
+        # is the kind of omission that only shows up on a train.
+        run: |
+          test -f apps/web/dist/sw.js
+          test -f apps/web/dist/offline.html
+          ls -la apps/web/dist
+
+  kiosk:
+    name: Kiosk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/kiosk/package-lock.json
+
+      - run: npm ci
+        working-directory: apps/kiosk
+
+      - name: Hardware profile tests
+        # Runs the preload script's contract directly under `node --test`; no
+        # display or Electron download is needed for this.
+        run: npm test
+        working-directory: apps/kiosk
+
+  secrets:
+    name: Secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Nothing secret is committed
+        # Cheap, and it is the check most likely to matter. A signing secret or
+        # a database password in a public archive is not a mistake to be
+        # discovered later.
+        run: |
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "::error::.env is tracked. It must never be committed."
+            exit 1
+          fi
+          echo "no .env is tracked"
+          git ls-files | grep -Ei '(\.pem$|\.key$|credentials|secret)' && {
+            echo "::error::a file that looks like a credential is tracked"
+            exit 1
+          } || echo "no credential-shaped files are tracked"

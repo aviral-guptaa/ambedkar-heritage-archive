@@ -1,0 +1,18 @@
+# Anything that must never reach an image layer.
+.git
+.github
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/dist
+apps/api/var
+apps/api/data/*.db
+apps/kiosk/node_modules
+apps/kiosk/dist
+*.log
+.env
+.env.*
+!.env.example

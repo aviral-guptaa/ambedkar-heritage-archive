@@ -1,0 +1,134 @@
+"""The queue hand-off between the API and the worker.
+
+The worker used to crash on startup, and then crash again every time the queue
+ran dry, because nothing had ever run it. Those bugs were invisible to the rest
+of the suite: a code path only exercised by hand is a code path that does not
+work. These tests run the real providers against a real Redis and a real
+database, and finish a job end to end.
+
+Both backends are covered because both ship. ``RedisJobQueue`` is the production
+path; ``DatabaseJobQueue`` is the offline fallback that keeps the archive usable
+with no extra service.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+
+
+@pytest.fixture(params=["redis", "database"])
+def queue(request):
+    from app.providers.jobs import DatabaseJobQueue, RedisJobQueue
+
+    provider = RedisJobQueue() if request.param == "redis" else DatabaseJobQueue()
+    if not provider.is_available():
+        pytest.skip(f"{request.param} backend is not reachable")
+    return provider
+
+
+def _make_job(queue) -> str:
+    """A queued job id.
+
+    The database backend enqueues by clearing a job row's state, so the row has
+    to exist first; the Redis backend only carries the id.
+    """
+    job_id = uuid.uuid4().hex
+    if queue.name != "database":
+        return job_id
+    from app.db.base import session_scope
+    from app.models.enums import JobKind, JobState
+    from app.models.ops import ProcessingJob
+
+    # The database backend's enqueue is a no-op by design: the row is the queue
+    # entry, so it is created already QUEUED.
+    with session_scope() as db:
+        db.add(ProcessingJob(id=job_id, kind=JobKind.FINALISE, state=JobState.QUEUED))
+    return job_id
+
+
+def _drain(queue) -> list[str]:
+    """Empty the queue, returning the job ids it held, in the order given."""
+    drained: list[str] = []
+    while True:
+        job_id = queue.dequeue(timeout=1)
+        if job_id is None:
+            return drained
+        drained.append(job_id)
+
+
+def test_enqueue_then_dequeue_returns_the_same_job_id(queue):
+    _drain(queue)  # ignore anything left over from development
+    job_id = _make_job(queue)
+    queue.enqueue(job_id)
+    try:
+        assert queue.dequeue(timeout=5) == job_id
+    finally:
+        _drain(queue)
+
+
+def test_an_idle_queue_returns_none_instead_of_raising(queue):
+    """An empty poll is the common case; it must not crash the worker."""
+    _drain(queue)
+    assert queue.dequeue(timeout=1) is None
+    assert queue.dequeue(timeout=1) is None
+
+
+def test_jobs_come_back_in_the_order_they_were_queued(queue):
+    _drain(queue)
+    ids = [_make_job(queue) for _ in range(3)]
+    try:
+        for job_id in ids:
+            queue.enqueue(job_id)
+        assert _drain(queue) == ids
+    finally:
+        _drain(queue)
+
+
+def test_queue_depth_reflects_pending_work(queue):
+    _drain(queue)
+    # The database backend counts every unfinished job row, including rows left
+    # by an earlier run, so the change in depth is what is asserted.
+    before = queue.queue_depth()
+    job_id = _make_job(queue)
+    queue.enqueue(job_id)
+    try:
+        assert queue.queue_depth() == before + 1
+    finally:
+        _drain(queue)
+    assert queue.queue_depth() == before
+
+
+def test_worker_claims_a_queued_job_and_runs_it(queue, seeded):
+    """The whole path: a job in the database, taken by the worker, completed.
+
+    This is the test that would have caught the startup crash.
+    """
+    from app.db.base import session_scope
+    from app.models.archive import Document
+    from app.models.enums import JobKind, JobState
+    from app.models.ops import ProcessingJob
+    from app.services.tasks import run_job
+
+    _drain(queue)
+    with session_scope() as db:
+        document = db.query(Document).filter(Document.slug == "caste-in-india-1916").one()
+        job = ProcessingJob(
+            id=str(uuid.uuid4()),
+            kind=JobKind.FINALISE,
+            document_id=document.id,
+            state=JobState.QUEUED,
+        )
+        db.add(job)
+        job_id = job.id
+
+    queue.enqueue(job_id)
+    try:
+        assert queue.dequeue(timeout=5) == job_id
+        outcome = run_job(job_id)
+        assert outcome["state"] == JobState.COMPLETED, outcome
+    finally:
+        with session_scope() as db:
+            db.query(ProcessingJob).filter(ProcessingJob.id == job_id).delete()
+        _drain(queue)

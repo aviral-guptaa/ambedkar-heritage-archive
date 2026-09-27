@@ -1,0 +1,147 @@
+# The archive in production.
+#
+# NOTE: this file has not been run. Docker was not available on the machine this
+# was built on, so nothing here is verified. It is written to be read and
+# checked, not trusted. See docs/OPERATIONS.md for how to verify it before a
+# kiosk depends on it.
+
+name: ambedkar-archive
+
+services:
+  database:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-archive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-archive}
+      # The archive stores transcripts, not secrets, and is served over a local
+      # network only. scram is still the right default.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+    volumes:
+      - database:/var/lib/postgresql/data
+      - ./deploy/init-extensions.sql:/docker-entrypoint-initdb.d/10-extensions.sql:ro
+    healthcheck:
+      # The archive refuses to serve until its schema is migrated, so the API
+      # waits for the database to be genuinely ready rather than for the port
+      # to be open.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-archive} -d ${POSTGRES_DB:-archive}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [archive]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      # Required, and refused at startup if it is the shipped default. Generate
+      # one with: python -c "import secrets; print(secrets.token_urlsafe(48))"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env - see .env.example}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-archive}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB:-archive}
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_BACKEND: ${QUEUE_BACKEND:-redis}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-filesystem}
+      LOCAL_STORAGE_PATH: /var/lib/dha/objects
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # The public archive is read-only, so its CORS origins are explicit.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      # A production deployment supplies real model credentials. Without them
+      # the archive falls back to deterministic embeddings and extractive
+      # answers, which is stated in the health response rather than hidden.
+      LLM_PROVIDER: ${LLM_PROVIDER:-none}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    volumes:
+      - objects:/var/lib/dha/objects
+      - runtime:/var/lib/dha/var
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks: [archive]
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # The worker runs the same image as the API, so a queue payload cannot
+    # behave differently from the code that enqueued it.
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      # Required, and refused at startup if it is the shipped default. Generate
+      # one with: python -c "import secrets; print(secrets.token_urlsafe(48))"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env - see .env.example}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-archive}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB:-archive}
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_BACKEND: redis
+      STORAGE_BACKEND: filesystem
+      LOCAL_STORAGE_PATH: /var/lib/dha/objects
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - objects:/var/lib/dha/objects
+      - runtime:/var/lib/dha/var
+    networks: [archive]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # The queue is rebuildable from the database, so it is not persisted: a
+    # stale queued job after a crash is worse than a job that has to be requeued
+    # on purpose.
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [archive]
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: serve
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    networks: [archive]
+
+volumes:
+  database:
+  objects:
+  runtime:
+
+networks:
+  archive:
+    driver: bridge

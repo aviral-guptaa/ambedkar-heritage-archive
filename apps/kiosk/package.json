@@ -1,0 +1,41 @@
+{
+  "name": "ambedkar-heritage-kiosk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Kiosk shell for the Dr. B. R. Ambedkar Digital Heritage Archive (SIH26096)",
+  "license": "MIT",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "DHA_DEV=1 electron .",
+    "dist": "electron-builder --linux --mac",
+    "dist:pi": "electron-builder --linux --arm64",
+    "test": "node --test hardware.test.js"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "archive.ambedkar.sih26096.kiosk",
+    "productName": "Ambedkar Digital Heritage Kiosk",
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        "dir"
+      ],
+      "category": "Education"
+    },
+    "mac": {
+      "target": [
+        "dir"
+      ],
+      "category": "public.app-category.education"
+    }
+  }
+}
