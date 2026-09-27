@@ -19,7 +19,17 @@ import pytest
 
 
 @pytest.fixture(params=["redis", "database"])
-def queue(request):
+def queue(request, migrated_database):
+    """A real queue, for whichever backends are actually reachable.
+
+    ``migrated_database`` is requested first and deliberately. Importing
+    ``app.providers.jobs`` builds the settings object, and settings are read at
+    import time — so if this fixture ran before the harness had chosen a
+    throwaway database, the suite would quietly use the developer's real one.
+    Depending on it here makes the ordering explicit rather than accidental:
+    without it, this file passed in a full run (an earlier test had already
+    imported the application correctly) and failed when run on its own.
+    """
     from app.providers.jobs import DatabaseJobQueue, RedisJobQueue
 
     provider = RedisJobQueue() if request.param == "redis" else DatabaseJobQueue()

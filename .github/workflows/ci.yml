@@ -80,7 +80,12 @@ jobs:
           # The suite connects over TCP here; locally it uses a unix socket.
           # One libpq conninfo string serves both — see tests/conftest.py.
           DHA_TEST_PG_DSN: host=localhost port=5432 dbname=postgres user=postgres password=postgres
-        run: python -m pytest tests -q
+        # -rs, because this suite skips the five Redis tests when no Redis is
+        # reachable. That is correct behaviour — the archive ships a database
+        # fallback and CI has no reason to run a second service — but a skip
+        # nobody can see is indistinguishable from a test that quietly stopped
+        # testing anything.
+        run: python -m pytest tests -q -rs
 
       - name: The interface can be built and served from one port
         # Proves the Render arrangement rather than assuming it: WEB_DIST makes
