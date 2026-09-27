@@ -122,12 +122,21 @@ stating in a submission:
 
 ## When something does not work
 
-**The build fails on `pgvector`.** The migrations need the `vector` extension to
-exist. `deploy/init-extensions.sql` handles this locally; on Render, create them
-once against the managed database:
+**The build fails on `pgvector`.** The initial migration creates the `vector`
+and `pg_trgm` extensions itself (`CREATE EXTENSION IF NOT EXISTS` in
+`ad2a75161e01_initial_archive_schema.py`), so a first deploy needs no manual
+step. If the deploy role is not permitted to create extensions, the migration
+fails with `permission denied to create extension`; create them once as the
+database owner, then redeploy:
 
     psql "$DATABASE_URL" -c 'CREATE EXTENSION IF NOT EXISTS vector'
     psql "$DATABASE_URL" -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm'
+
+**The worker log says it is waiting for the schema.** On a cold start the worker
+and the web service start together, and only the web service runs migrations. The
+worker waits up to two minutes for the schema rather than exiting, so a normal
+start is a short pause. If it reports that the wait expired, the web service
+migrated later than two minutes, or failed — read the web service log.
 
 **The service will not start, and the log says so.** That is the production guard
 doing its job. The message names the variable. Set it.

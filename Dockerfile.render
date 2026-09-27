@@ -21,11 +21,6 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY apps/web/ ./
 RUN npm run build
 
-# ----------------------------------------------------------------- database --
-# The migrations need `vector` to exist before they run, so a Postgres image that
-# already has it is used rather than compiling pgvector at deploy time.
-FROM docker.io/pgvector/pgvector:pg16 AS database
-
 # -------------------------------------------------------------------- final --
 FROM docker.io/library/python:3.12-slim-bookworm
 

@@ -24,6 +24,45 @@ log = get_logger(__name__)
 
 _stop = False
 
+# A worker and the web service start at the same time on Render, and the web
+# service is the one that runs migrations. The worker will therefore usually
+# lose a race it did not enter, and the schema it needs is not there yet.
+#
+# Exiting would be survivable — the platform restarts a crashed process — but it
+# turns a normal cold start into a crash loop, and the backoff means the worker
+# can still be waiting when the deploy has already been declared healthy. Waiting
+# a bounded time and saying so is the honest version: if the schema never turns
+# up, the wait ends and the original error is raised rather than swallowed.
+_SCHEMA_WAIT_SECONDS = 120.0
+_SCHEMA_POLL_SECONDS = 2.0
+
+
+def _recover_stuck_jobs() -> int:
+    """Requeue interrupted jobs, waiting for the schema if it is not there yet."""
+    deadline = time.monotonic() + _SCHEMA_WAIT_SECONDS
+    announced = False
+    last_error: Exception | None = None
+    while True:
+        try:
+            with session_scope() as db:
+                return retry_stuck_jobs(db)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+        if time.monotonic() >= deadline:
+            log.error(
+                "schema did not appear before the wait expired",
+                waited_seconds=_SCHEMA_WAIT_SECONDS,
+                error=str(last_error),
+            )
+            raise last_error  # type: ignore[misc]
+        if not announced:
+            log.info(
+                "waiting for the database schema before claiming jobs",
+                timeout_seconds=_SCHEMA_WAIT_SECONDS,
+            )
+            announced = True
+        time.sleep(_SCHEMA_POLL_SECONDS)
+
 
 def _handle_signal(signum: int, _frame: FrameType | None) -> None:  # noqa: ANN001
     global _stop  # noqa: PLW0603
@@ -44,8 +83,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     queue = get_queue()
-    with session_scope() as db:
-        recovered = retry_stuck_jobs(db)
+    recovered = _recover_stuck_jobs()
     log.info(
         "worker started",
         queue=queue.name,

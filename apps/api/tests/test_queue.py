@@ -14,6 +14,7 @@ with no extra service.
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 
 import pytest
 
@@ -142,3 +143,57 @@ def test_worker_claims_a_queued_job_and_runs_it(queue, seeded):
         with session_scope() as db:
             db.query(ProcessingJob).filter(ProcessingJob.id == job_id).delete()
         _drain(queue)
+
+
+def test_worker_waits_for_a_schema_that_is_not_there_yet(migrated_database, monkeypatch):
+    """A worker that starts before the web service has migrated waits.
+
+    On Render the two start together and only the web service runs migrations, so
+    the worker reliably loses a race it did not enter. Before this, the worker's
+    first query raised, the process exited, and the platform restarted it into a
+    backoff that can outlast the deploy. It should wait, and it should say so.
+    """
+    from app.worker import _recover_stuck_jobs
+
+    attempts: list[int] = []
+    waited: list[float] = []
+
+    def slow_schema(*_args, **_kwargs):
+        """Fail like a missing table would, then succeed."""
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise RuntimeError('relation "processing_job" does not exist')
+        return 4
+
+    monkeypatch.setattr("app.worker.time.sleep", waited.append)
+    monkeypatch.setattr("app.worker.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr("app.worker.retry_stuck_jobs", slow_schema)
+    monkeypatch.setattr("app.worker.session_scope", _null_session)
+
+    assert _recover_stuck_jobs() == 4
+    assert len(attempts) == 3, "it should have retried, not given up"
+    assert waited, "it should have paused between attempts instead of spinning"
+
+
+def test_worker_gives_up_rather_than_waiting_forever(migrated_database, monkeypatch):
+    """A schema that never arrives must surface, not be swallowed by a retry loop."""
+    from app.worker import _recover_stuck_jobs
+
+    def missing_schema(*_args, **_kwargs):
+        raise RuntimeError('relation "processing_job" does not exist')
+
+    # A clock that jumps past the deadline, so the test does not really wait.
+    ticks = iter([0.0, 0.0, 10_000.0, 10_000.0, 10_000.0, 10_000.0])
+    monkeypatch.setattr("app.worker.time.monotonic", lambda: next(ticks, 10_000.0))
+    monkeypatch.setattr("app.worker.time.sleep", lambda _s: None)
+    monkeypatch.setattr("app.worker.retry_stuck_jobs", missing_schema)
+    monkeypatch.setattr("app.worker.session_scope", _null_session)
+
+    with pytest.raises(RuntimeError, match="processing_job"):
+        _recover_stuck_jobs()
+
+
+@contextmanager
+def _null_session():
+    """A session_scope stand-in: ``retry_stuck_jobs`` is stubbed, so the body is empty."""
+    yield None
