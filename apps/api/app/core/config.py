@@ -66,7 +66,10 @@ class Settings(BaseSettings):
 
     # -------------------------------------------------------------- redis --
     redis_url: str = "redis://localhost:6379/0"
-    queue_backend: Literal["rq", "database"] = "database"
+    # "inline" runs jobs in the process that enqueued them. It exists because
+    # Render's free tier has no background worker, and the alternative on a free
+    # tier is a queue nothing ever drains.
+    queue_backend: Literal["rq", "database", "inline"] = "database"
     queue_name: str = "dha"
 
     # -------------------------------------------------------------- neo4j --

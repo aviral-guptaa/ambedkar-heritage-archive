@@ -1,27 +1,71 @@
 # Deploying to Render
 
-The archive is designed to run on Render from this repository with no manual
-steps beyond setting one variable. This document explains what gets deployed,
-what the platform's limits cost you, and what to do when something does not work.
+The archive is designed to run on Render's **free tiers** from this repository
+with no manual steps beyond setting one variable. This document explains what
+gets deployed, what the platform's limits cost you, and what to do when
+something does not work.
 
-## What you get
+## What it costs
 
-Three resources, declared in [`render.yaml`](../render.yaml):
+Nothing. Two resources, both on `plan: free`:
 
 | Resource | What it is | Why it exists |
 | --- | --- | --- |
 | `archive-db` | Managed PostgreSQL 16 | The archive is built on `tsvector`, `pgvector` and `pg_trgm`, which SQLite cannot render at all. |
 | `archive` | Web service, one port | Serves the built interface *and* the API from a single origin. |
-| `archive-worker` | Background worker | Drains the job queue: backfills, OCR, graph extraction, refreshes. |
 
-There is no Redis. The queue backend is the database, which is slower and
-entirely adequate at this volume, and it is one fewer service to pay for.
+`tests/test_deployment_config.py` fails the build if a paid plan or a background
+worker reappears in `render.yaml`, so the free arrangement cannot be lost by
+accident.
+
+### What "free" costs you
+
+Stated here rather than discovered in a month:
+
+- **The database is destroyed 30 days after it is created.** This is the one
+  that matters. A corpus that disappears is not a corpus, and no amount of
+  searching makes it one. Treat this as a demonstration, and move to a paid
+  database — which is one line in `render.yaml`, not a rewrite — before you
+  attach anything of value to it.
+- **The web service sleeps after 15 minutes of inactivity.** The first visitor
+  after a quiet spell waits through a cold start — tens of seconds on Render's
+  free tier, not the few seconds a warm instance takes. The corpus import is
+  skipped once the archive is populated, so the cold start is the boot, not the
+  537-record load.
+- **512 MB of memory, 0.1 CPU.** Measured, not assumed: importing all 537
+  records from empty peaks at 132 MB, and the resulting database is 75 MB of the
+  1 GB disk. Both leave room. The upload limit is set to 32 MB for the same
+  reason — the default 512 MB would be the whole instance, and one PDF could
+  trigger the out-of-memory killer mid-request.
+- **750 hours a month**, which is enough for one always-on service.
+- **Uploads and OCR output are lost on every redeploy and every wake from sleep**,
+  because there is no disk. A disk is a paid feature; see
+  [Persistent storage](#persistent-storage).
+
+### There is no worker
+
+Free Render does not offer background workers, so a `worker` block would stop
+the Blueprint from being created at all. The consequence is handled rather than
+ignored: `QUEUE_BACKEND=inline` runs each job inside the API process as it is
+enqueued, so uploads, OCR and graph extraction still complete.
+
+The trade is real. Work that used to be spread across a background process now
+happens inside a user-facing request, so an upload that triggers OCR holds the
+request open for the duration, and a process killed mid-job leaves that job
+stuck — recovering orphaned jobs is the worker's job, and there isn't one.
+`/api/v1/health` reports the queue as `backend: "inline"` with `workers: 0` and a
+`detail` explaining that the count is zero because the API process is the worker,
+so the state is visible rather than something a reader has to infer.
+
+With a paid plan, add the worker block back and set `QUEUE_BACKEND=database`.
+
+There is no Redis. Nothing here needs it, and it is one fewer thing to pay for.
 
 ## Deploying
 
 1. Push this repository to GitHub.
 2. In Render: **New → Blueprint**, and point it at the repository.
-3. Render reads `render.yaml` and creates all three resources.
+3. Render reads `render.yaml` and creates both resources.
 4. Set `PUBLIC_BASE_URL` to the address the service was given. Render marks it
    `sync: false`, so it will prompt you. It appears in citation links and on the
    offline page, so it has to be the address a reader actually visits.
@@ -84,24 +128,22 @@ An empty `CORS_ORIGINS` is explicitly *not* a problem. Both supported
 arrangements serve the interface and the API from one origin, so a browser never
 makes a cross-origin request and no CORS headers are needed at all.
 
-## What the free tier costs you
+## Persistent storage
 
-Worth reading before you rely on this for anything:
+The free tier has no disk, so `STORAGE_BACKEND=filesystem` keeps uploads in the
+container's own filesystem and loses them on every redeploy. When that stops being
+acceptable, there are two ways out, in order of effort:
 
-- **The web service sleeps** after a period of inactivity, and the first request
-  after that takes tens of seconds. Fine for a demonstration; bad for anything
-  with a user waiting.
-- **The database is destroyed after 30 days.** This is the important one. A
-  demonstration loses its uploads, its OCR work and any accounts created through
-  the interface. The corpus is re-imported on the next boot, so the site comes
-  back, but anything a visitor contributed does not.
-- **Uploads and OCR output are ephemeral.** `STORAGE_BACKEND=filesystem` writes
-  to the container's own disk, which is discarded on every deploy. Attach a disk
-  or point `STORAGE_BACKEND` at an object store if that matters.
-- **Background workers are a paid feature.** Deleting the `archive-worker` block
-  from `render.yaml` leaves the site working: the corpus is embedded and
-  searchable, and only the deferred work stops running. Nothing a first-time
-  visitor does depends on it.
+1. **Attach a disk** to the web service and point `LOCAL_STORAGE_PATH` at the
+   mount. One `disk:` block in `render.yaml` plus one variable. Cheapest, and
+   still Render.
+2. **Use an object store.** `STORAGE_BACKEND=minio` with `MINIO_ENDPOINT`,
+   `MINIO_BUCKET`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` and `MINIO_SECURE`
+   set. The archive already speaks the S3 protocol and works against MinIO, so
+   this is configuration, not code — a hosted S3 bucket works as the endpoint.
+
+The 30-day database expiry is a separate problem and neither of these fixes it.
+Only a paid (or externally hosted) database survives.
 
 ## The honest limitations of a public deployment
 

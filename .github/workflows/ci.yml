@@ -233,3 +233,58 @@ jobs:
           print("  resources:", ", ".join(
               k for k in doc if k in {"services", "databases", "envVarGroups"}))
           PY
+
+      - name: The blueprint still costs nothing to run
+        # The schema above cannot check this. `plan` accepts any string the
+        # platform offers, `starter` validates perfectly, and a free background
+        # worker is not something the schema knows does not exist. So the
+        # commitment this repository makes — that deploying it does not cost the
+        # reader money — is checked here, where a later change that quietly
+        # upgrades a plan fails the build instead of someone's invoice.
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pyyaml
+          python - <<'PY'
+          import sys
+          import yaml
+
+          doc = yaml.safe_load(open("render.yaml"))
+          problems = []
+
+          for service in doc.get("services", []):
+              # `plan: free` is required rather than merely permitted. A resource
+              # with no plan key takes the platform's default for its type, and
+              # that default is not something this repository should depend on
+              # to stay free.
+              if service.get("plan") != "free":
+                  problems.append(
+                      f"service {service.get('name')!r} has plan "
+                      f"{service.get('plan')!r}; it must be 'free'")
+              if service.get("type") == "worker":
+                  problems.append(
+                      f"service {service.get('name')!r} is a worker; free Render "
+                      "plans have none, so the Blueprint would fail to create")
+
+          for database in doc.get("databases", []):
+              if database.get("plan") != "free":
+                  problems.append(
+                      f"database {database.get('name')!r} has plan "
+                      f"{database.get('plan')!r}; it must be 'free'")
+
+          for problem in problems:
+              print(f"::error::render.yaml: {problem}")
+          if problems:
+              sys.exit(1)
+          print(
+              "render.yaml declares only free resources: "
+              + ", ".join(
+                  f"{s.get('name')} ({s.get('plan')})"
+                  for s in doc.get("services", [])
+              )
+              + ", "
+              + ", ".join(
+                  f"{d.get('name')} ({d.get('plan')})"
+                  for d in doc.get("databases", [])
+              )
+          )
+          PY

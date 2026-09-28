@@ -195,13 +195,23 @@ class InlineJobQueue:
     """Executes the job immediately in-process.
 
     Used by the CLI and the test-suite so ingestion can be verified without
-    running a worker. The job record still records the real timings.
+    running a worker, and selected as the real queue backend by
+    ``QUEUE_BACKEND=inline`` — which is what the free Render deployment runs,
+    because free Render has no background worker to run one. The job record
+    still records the real timings.
+
+    The cost is that the work happens inside whichever request enqueued it, so
+    an upload that triggers OCR holds that request open, and a process killed
+    mid-job leaves the job stuck with nothing to recover it.
     """
 
     name = "inline"
 
     def __init__(self) -> None:
-        from app.workers.tasks import run_job
+        # app.services.tasks, not app.workers.tasks: there is no app/workers
+        # package, and nothing constructed this class before it became the queue
+        # backend for a deployment with no worker to run one.
+        from app.services.tasks import run_job
 
         self._run = run_job
 
@@ -223,6 +233,14 @@ class InlineJobQueue:
 
 @lru_cache(maxsize=1)
 def get_queue() -> JobQueue:
+    if settings.queue_backend == "inline":
+        # No worker, no Redis, no second process. The job runs in the request
+        # that enqueued it, which is the only arrangement that works on a
+        # platform that only offers free web services. It is a real trade: work
+        # that used to be spread out over a background process now happens
+        # inside a user-facing request, and a process that dies mid-job leaves
+        # that job stuck, because recovering it is the worker's job.
+        return InlineJobQueue()
     if settings.queue_backend == "rq":
         queue = RedisJobQueue()
         if queue.is_available():
@@ -251,6 +269,13 @@ def queue_capability() -> dict[str, Any]:
                 db.close()
         except Exception as exc:  # noqa: BLE001  # pragma: no cover
             info["error"] = str(exc)[:160]
+    if queue.name == "inline":
+        # A count of zero workers is true and alarming at the same time. Say what
+        # it means, or a reader concludes the queue is broken.
+        info["detail"] = (
+            "jobs run inside the API process as they are enqueued; "
+            "there is no separate worker to count"
+        )
     return info
 
 
