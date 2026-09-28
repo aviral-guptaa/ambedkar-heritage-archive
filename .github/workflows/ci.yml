@@ -198,3 +198,38 @@ jobs:
             echo "::error::a file that looks like a credential is tracked"
             exit 1
           } || echo "no credential-shaped files are tracked"
+
+      - name: The Render blueprint matches Render's schema
+        # This file shipped with `datastore:` where the schema says `databases:`,
+        # and every test in this repository passed. Nothing here type-checks a
+        # deployment file against the platform that has to accept it, so the
+        # mistake could only be found by a person creating the Blueprint.
+        #
+        # The schema is fetched rather than vendored on purpose: a pinned copy
+        # would drift and would then be validating against Render's past, not
+        # Render. If this step ever fails because the URL moved, that is a
+        # genuine gap in the check rather than a reason to trust an old copy.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://render.com/schema/render.yaml.json -o /tmp/render.schema.json
+          python -m pip install --quiet jsonschema pyyaml
+          python - <<'PY'
+          import json, sys
+          from jsonschema import Draft202012Validator
+          import yaml
+
+          schema = json.load(open("/tmp/render.schema.json"))
+          doc = yaml.safe_load(open("render.yaml"))
+          errors = sorted(
+              Draft202012Validator(schema).iter_errors(doc),
+              key=lambda e: list(e.absolute_path),
+          )
+          for err in errors:
+              where = "/".join(str(p) for p in err.absolute_path) or "(root)"
+              print(f"::error::render.yaml at {where}: {err.message[:300]}")
+          if errors:
+              sys.exit(1)
+          print("render.yaml is valid against Render's live schema")
+          print("  resources:", ", ".join(
+              k for k in doc if k in {"services", "databases", "envVarGroups"}))
+          PY
