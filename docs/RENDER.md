@@ -20,34 +20,42 @@ accident.
 
 ### What "free" costs you
 
-Stated here rather than discovered in a month:
+Stated here rather than discovered in a month. The figures are from Render's
+own free-tier documentation, not estimated:
 
 - **The database is destroyed 30 days after it is created.** This is the one
   that matters. A corpus that disappears is not a corpus, and no amount of
-  searching makes it one. Treat this as a demonstration, and move to a paid
-  database — which is one line in `render.yaml`, not a rewrite — before you
-  attach anything of value to it.
+  searching makes it one. Render emails before the expiry and then again at the
+  end of a **14-day grace period**, during which the database is inaccessible but
+  not yet deleted; upgrading to a paid plan inside that window keeps the data.
+  Treat this as a demonstration, and move to a paid database before you attach
+  anything of value to it. Only **one** free Postgres database is allowed per
+  workspace, so this cannot be sidestepped by creating a second.
 - **The web service sleeps after 15 minutes of inactivity.** The first visitor
-  after a quiet spell waits through a cold start — tens of seconds on Render's
-  free tier, not the few seconds a warm instance takes. The corpus import is
-  skipped once the archive is populated, so the cold start is the boot, not the
-  537-record load.
+  after a quiet spell waits for a cold start, which Render puts at about a
+  minute. The corpus import is skipped once the archive is populated, so the wait
+  is the boot itself, not the 537-record load.
 - **512 MB of memory, 0.1 CPU.** Measured, not assumed: importing all 537
   records from empty peaks at 132 MB, and the resulting database is 75 MB of the
   1 GB disk. Both leave room. The upload limit is set to 32 MB for the same
   reason — the default 512 MB would be the whole instance, and one PDF could
   trigger the out-of-memory killer mid-request.
-- **750 hours a month**, which is enough for one always-on service.
+- **750 instance hours per workspace per calendar month.** Enough for one
+  always-on service. Hours do not roll over.
 - **Uploads and OCR output are lost on every redeploy and every wake from sleep**,
-  because there is no disk. A disk is a paid feature; see
+  because free services cannot have a disk attached. See
   [Persistent storage](#persistent-storage).
+- **No credit card is required**, so nothing here can start charging you by
+  default.
 
 ### There is no worker
 
-Free Render does not offer background workers, so a `worker` block would stop
-the Blueprint from being created at all. The consequence is handled rather than
-ignored: `QUEUE_BACKEND=inline` runs each job inside the API process as it is
-enqueued, so uploads, OCR and graph extraction still complete.
+Free Render does not offer background workers — they cannot be created on a free
+plan at all, and the cheapest worker starts at $7/month — so a `worker` block
+would stop the Blueprint from being created. Cron jobs are likewise unavailable
+on free; the archive does not use them. The consequence of no worker is handled
+rather than ignored: `QUEUE_BACKEND=inline` runs each job inside the API process
+as it is enqueued, so uploads, OCR and graph extraction still complete.
 
 The trade is real. Work that used to be spread across a background process now
 happens inside a user-facing request, so an upload that triggers OCR holds the
@@ -135,12 +143,14 @@ container's own filesystem and loses them on every redeploy. When that stops bei
 acceptable, there are two ways out, in order of effort:
 
 1. **Attach a disk** to the web service and point `LOCAL_STORAGE_PATH` at the
-   mount. One `disk:` block in `render.yaml` plus one variable. Cheapest, and
-   still Render.
+   mount. One `disk:` block in `render.yaml` plus one variable. This requires a
+   paid plan — free services cannot have a disk attached at all.
 2. **Use an object store.** `STORAGE_BACKEND=minio` with `MINIO_ENDPOINT`,
    `MINIO_BUCKET`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` and `MINIO_SECURE`
    set. The archive already speaks the S3 protocol and works against MinIO, so
    this is configuration, not code — a hosted S3 bucket works as the endpoint.
+   Cheapest of the two, because the object store can be on a free tier
+   elsewhere.
 
 The 30-day database expiry is a separate problem and neither of these fixes it.
 Only a paid (or externally hosted) database survives.

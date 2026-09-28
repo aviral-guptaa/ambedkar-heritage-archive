@@ -12,19 +12,21 @@
 # What "free" costs you here, stated up front rather than in a footnote.
 #
 # Render's free web service sleeps after 15 minutes of inactivity, so the first
-# visitor after a quiet spell waits for a cold start. The free database is
-# destroyed 30 days after it is created. This is a demonstration arrangement,
+# visitor after a quiet spell waits for a cold start, which Render puts at about
+# a minute. The free database is destroyed 30 days after it is created, after a
+# 14-day grace period in which it can still be rescued by upgrading; only one
+# free database is allowed per workspace. This is a demonstration arrangement,
 # not an archive: a corpus that vanishes a month later is not a corpus. If this
 # is going to hold anything of value, it needs a paid database, and that is one
-# setting in this file rather than a rewrite.
+# plan change in this file rather than a rewrite. No credit card is required.
 #
-# There is no background worker, because free Render does not offer one. The
-# consequence is handled rather than ignored: QUEUE_BACKEND=inline runs each job
-# inside the API process as it is enqueued, so uploads, OCR and graph extraction
-# still complete. The cost is that the work happens inside a user-facing request,
-# and a process killed mid-job leaves that job stuck. /api/v1/health reports
-# backend "inline" and says why the worker count is zero, so the state is
-# visible rather than inferred.
+# There is no background worker, because free Render does not offer one at all.
+# The consequence is handled rather than ignored: QUEUE_BACKEND=inline runs each
+# job inside the API process as it is enqueued, so uploads, OCR and graph
+# extraction still complete. The cost is that the work happens inside a
+# user-facing request, and a process killed mid-job leaves that job stuck.
+# /api/v1/health reports backend "inline" and says why the worker count is zero,
+# so the state is visible rather than inferred.
 
 databases:
   - name: archive-db
