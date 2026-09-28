@@ -322,3 +322,98 @@ def test_inline_queue_backend_is_selectable() -> None:
         "a worker count of zero is true and alarming at once. The health response "
         "has to say what it means, or a reader concludes the queue is broken."
     )
+
+
+#: The exact shape Render's ``fromDatabase`` connectionString arrives in, which
+#: is what a Blueprint-created service is given. Verified against the deployed
+#: service, where it produced the psycopg2 import error below.
+RENDER_CONNECTION_STRING = (
+    "postgresql://archive_user:s3cr3t@aws-0-eu-central-1a.db.render.com:5432/archive_db"
+)
+
+
+def test_a_render_connection_string_resolves_to_the_installed_driver() -> None:
+    """A bare ``postgresql://`` must mean psycopg3, because only psycopg3 exists.
+
+    This is not hypothetical. The first deploy of the free Blueprint died in
+    ``alembic upgrade`` with::
+
+        ModuleNotFoundError: No module named 'psycopg2'
+
+    ``requirements.txt`` pins ``psycopg[binary,pool]`` and never installs
+    psycopg2, and SQLAlchemy defaults a scheme with no ``+driver`` part to
+    psycopg2 — so the platform's perfectly ordinary connection string asked for
+    a package this image does not have. The error appeared during the migration
+    step, before the application had run a line of its own.
+
+    Every URL inside this repository spells out ``postgresql+psycopg://``, which
+    is why 110 tests, a Compose stack and a local database all worked and the
+    deployed one did not. The only place a bare URL came from was the platform.
+
+    Creating the engine is the check: it forces the DBAPI to be imported, which
+    is the step that raised. Nothing here connects to a database.
+    """
+    from sqlalchemy import create_engine
+
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None, database_url=RENDER_CONNECTION_STRING)
+    engine = create_engine(settings.database_url)
+    assert engine.dialect.dbapi.__name__ == "psycopg", (
+        f"a Render connection string resolves to "
+        f"{engine.dialect.dbapi.__name__!r}, not psycopg3"
+    )
+
+
+@pytest.mark.parametrize(
+    ("supplied", "expected_scheme"),
+    [
+        ("postgresql://u:p@host:5432/db", "postgresql+psycopg"),
+        ("postgres://u:p@host:5432/db", "postgresql+psycopg"),
+        ("postgresql+psycopg://u:p@host:5432/db", "postgresql+psycopg"),
+        # An explicit driver is a deliberate choice and is left alone. The
+        # resulting error names psycopg2, which is a legible failure rather
+        # than a silent substitution of something the operator did not ask for.
+        ("postgresql+psycopg2://u:p@host:5432/db", "postgresql+psycopg2"),
+        # The unit-test harness uses SQLite, and must keep working.
+        ("sqlite:///:memory:", "sqlite"),
+    ],
+)
+def test_the_driver_is_pinned_without_overriding_an_explicit_choice(
+    supplied: str, expected_scheme: str
+) -> None:
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None, database_url=supplied)
+    assert settings.database_url.split("://", 1)[0] == expected_scheme
+
+
+def test_migrations_and_the_application_agree_on_the_driver() -> None:
+    """Alembic and the application must not resolve the URL differently.
+
+    The two read ``settings.database_url`` independently, and the deploy that
+    failed did so in Alembic first. Normalising in Settings rather than at each
+    call site is what keeps them in step; this fails if someone reintroduces a
+    per-call-site rewrite that only one of them applies.
+    """
+    import ast
+    from pathlib import Path
+
+    env_py = (Path(__file__).resolve().parents[1] / "alembic" / "env.py").read_text(
+        encoding="utf-8"
+    )
+    base_py = (Path(__file__).resolve().parents[1] / "app" / "db" / "base.py").read_text(
+        encoding="utf-8"
+    )
+
+    for name, source in (("alembic/env.py", env_py), ("app/db/base.py", base_py)):
+        assert "settings.database_url" in source, f"{name} no longer reads the setting"
+        # No hardcoded driver: the scheme is decided in one place, in Settings.
+        assert "postgresql+psycopg" not in source, (
+            f"{name} hardcodes a driver in the URL. Normalising in Settings is "
+            "deliberate — a second place that rewrites the scheme is how the two "
+            "call sites drift apart and one of them reaches for a driver that is "
+            "not installed."
+        )
+        tree = ast.parse(source)
+        assert tree, f"{name} is not valid Python"

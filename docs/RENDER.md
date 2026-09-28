@@ -190,6 +190,24 @@ worker waits up to two minutes for the schema rather than exiting, so a normal
 start is a short pause. If it reports that the wait expired, the web service
 migrated later than two minutes, or failed — read the web service log.
 
+**`ModuleNotFoundError: No module named 'psycopg2'` during `alembic upgrade`.**
+The platform's `fromDatabase` connection string is a plain `postgresql://…`,
+which SQLAlchemy reads as a request for psycopg2 — a driver this project does not
+install, because it depends on psycopg3. Settings now rewrites a bare scheme to
+`postgresql+psycopg://`, so this is handled, and the test suite fails if it
+regresses. It is recorded here because it was the first thing that actually broke
+a deploy, and the error names a package that is genuinely absent rather than
+anything misconfigured.
+
+**The migration cannot create the `vector` extension.** `pg_trgm` is a trusted
+extension and any database owner can install it, but `pgvector` is not, so
+`CREATE EXTENSION vector` needs more privilege than a plain owner has. Render
+supports pgvector and documents `CREATE EXTENSION vector;` as the way to enable
+it on PostgreSQL 13 and later, run from the PSQL command on the database's Info
+page, so this works on Render. It does *not* work on a stock local PostgreSQL
+where pgvector's control file is not marked trusted — which is why
+`scripts/bootstrap_db.sh` has to be run as a superuser locally.
+
 **The service will not start, and the log says so.** That is the production guard
 doing its job. The message names the variable. Set it.
 

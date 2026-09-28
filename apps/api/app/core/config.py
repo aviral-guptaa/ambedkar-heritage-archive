@@ -268,6 +268,39 @@ class Settings(BaseSettings):
                     return [str(item).strip() for item in parsed if str(item).strip()]
         return [item.strip() for item in v.split(",") if item.strip()]
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _pin_the_postgres_driver(cls, v: object) -> object:
+        """Make a bare ``postgresql://`` URL mean psycopg3.
+
+        SQLAlchemy reads the driver out of the URL scheme, and a URL with no
+        ``+driver`` part defaults to psycopg2. This project depends on psycopg3
+        and does not install psycopg2, so a bare URL produces
+        ``ModuleNotFoundError: No module named 'psycopg2'`` at the first
+        connect — which on a fresh Render deploy happened inside
+        ``alembic upgrade``, before the application had imported anything of
+        its own.
+
+        Nothing caught it here because the local ``.env`` spells the driver out
+        as ``postgresql+psycopg://``, and Render's ``fromDatabase`` connection
+        string does not: the platform hands you a plain ``postgresql://``, which
+        is the most ordinary database URL there is and means something different
+        to this code than it looks like it means.
+
+        So the scheme is pinned here, in one place, and every consumer —
+        the application's engine, Alembic's online and offline paths — is
+        corrected at once. A driver named explicitly is left alone: overriding
+        ``postgresql+psycopg2://`` would be second-guessing a deliberate
+        choice, and the failure for that is a legible one. ``sqlite://`` is
+        untouched, because the unit-test harness uses it.
+        """
+        if not isinstance(v, str):
+            return v
+        for bare in ("postgresql://", "postgres://"):
+            if v.startswith(bare):
+                return "postgresql+psycopg://" + v[len(bare) :]
+        return v
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

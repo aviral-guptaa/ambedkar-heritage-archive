@@ -169,7 +169,7 @@ If `npm install` does not fetch the Electron binary, see
 ## Tests
 
 ```bash
-# Backend: 110 tests. Needs PostgreSQL; uses a disposable migrated database.
+# Backend: 117 tests. Needs PostgreSQL; uses a disposable migrated database.
 cd apps/api && ../../.venv/bin/python -m pytest tests -q
 
 # Frontend: 54 tests, strict typecheck, production build

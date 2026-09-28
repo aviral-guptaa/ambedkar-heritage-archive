@@ -6,7 +6,7 @@ Read this before trusting any instruction in this file.
 
 | Checked on this machine | Not checked |
 | --- | --- |
-| 110 backend tests, 54 frontend tests, 21 kiosk tests | `docker compose up` — Docker was not installed |
+| 117 backend tests, 54 frontend tests, 21 kiosk tests | `docker compose up` — Docker was not installed |
 | Frontend production build, TypeScript strict typecheck | Verified source promotion — archival sites return Cloudflare challenges |
 | 31 contract, 33 admin, 16 offline, 13 i18n and 108 route checks against a running instance | Electron packaging (`electron-builder`) |
 | A real worker completing a `FINALISE` job end to end | |
