@@ -26,6 +26,7 @@ const NAV = [
   { to: '/knowledge-graph', key: 'nav.graph', end: false },
   { to: '/media', key: 'nav.media', end: false },
   { to: '/stories', key: 'nav.stories', end: false },
+  { to: '/digitize', key: 'nav.digitize', end: false },
 ] as const satisfies readonly { to: string; key: StringKey; end: boolean }[]
 
 export function Layout() {

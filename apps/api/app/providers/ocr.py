@@ -358,7 +358,18 @@ def run_ocr(
         "engine": ocr.engine,
         "engine_version": ocr.engine_version,
         "language": ocr.language,
-        "blocks": [vars(b) for b in ocr.blocks],
+        # OCRBlock is a slots dataclass, so vars() cannot read it; use the
+        # field names directly.
+        "blocks": [
+            {
+                "text": b.text,
+                "confidence": b.confidence,
+                "box": b.box,
+                "language": b.language,
+                "block_type": b.block_type,
+            }
+            for b in ocr.blocks
+        ],
         "layout": ocr.layout,
         "duration_ms": ocr.duration_ms,
         "preprocessing": pre,

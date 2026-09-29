@@ -24,7 +24,18 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-from app.api import admin, auth, documents, graph, media, rag, search, speech, system
+from app.api import (
+    admin,
+    auth,
+    digitize,
+    documents,
+    graph,
+    media,
+    rag,
+    search,
+    speech,
+    system,
+)
 from app.core.config import settings
 from app.core.logging import get_logger, configure_logging
 from app.core.production_guard import assert_production_ready
@@ -151,7 +162,7 @@ def create_app() -> FastAPI:
     )
 
     prefix = settings.api_prefix
-    for module in (system, auth, documents, search, rag, graph, media, speech, admin):
+    for module in (system, auth, documents, digitize, search, rag, graph, media, speech, admin):
         app.include_router(module.router, prefix=prefix)
 
     @app.exception_handler(RequestValidationError)

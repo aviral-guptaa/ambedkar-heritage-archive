@@ -38,10 +38,16 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
+  // A FormData body must keep the boundary the browser generates, so the
+  // content type is only set for the bodies that are actually JSON. Setting it
+  // on a multipart body strips the boundary and the server sees no file at all.
+  const isMultipart = typeof FormData !== 'undefined' && init?.body instanceof FormData
   try {
     response = await fetch(`${BASE}${path}`, {
       ...init,
-      headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+      headers: isMultipart
+        ? (init?.headers ?? {})
+        : { 'content-type': 'application/json', ...(init?.headers ?? {}) },
     })
   } catch (cause) {
     // A network failure is reported as such. It must never be rendered as
@@ -165,6 +171,65 @@ export interface TextPart {
   page_number: number | null
   page_information_unavailable: boolean
   text: string
+}
+
+/**
+ * The 30-second understanding of one record.
+ *
+ * `available` is false when the record has too little text to summarise without
+ * inventing something; `unavailable_reason` then explains why, and the reader is
+ * pointed at the full text instead.
+ */
+export interface GroundedSummary {
+  document_id: string
+  document_slug: string
+  available: boolean
+  disclosure: string
+  /** Always `extractive`: the text is quoted from the record, not generated. */
+  method: 'extractive'
+  model_id: null
+  /** One catalogued sentence about what the record is. */
+  what_is_this: string
+  main_idea: string | null
+  key_points: Array<{ text: string; page_number: number | null; chunk_index: number }>
+  source_characters: number
+  source_chunks: number
+  unavailable_reason: string | null
+  citations: Array<{ text: string; page_number: number | null }>
+}
+
+export interface DigitizeCapabilities {
+  ocr_available: boolean
+  ocr_detail: string
+  translation_available: boolean
+  translation_detail: string
+  accepted_extensions: string[]
+  max_upload_bytes: number
+  max_pages: number
+  languages: string[]
+}
+
+/** The honest outcome of one digitisation attempt. */
+export interface DigitizeResult {
+  document_id: string
+  document_slug: string
+  title: string
+  filename: string
+  sha256: string
+  page_count: number
+  ocr_status: string
+  ocr_engine: string | null
+  confidence: number | null
+  detected_language: string | null
+  /** Text as OCR read it, in the original language. */
+  original_text: string
+  /** Only ever populated by a real translation provider. */
+  english_text: string | null
+  translation_status: 'complete' | 'unavailable' | 'failed' | 'not_attempted'
+  translation_detail: string | null
+  warnings: string[]
+  is_draft: boolean
+  disclosure: string
 }
 
 export interface DocumentText {
@@ -394,6 +459,8 @@ export const api = {
 
   documentText: (identifier: string) => request<DocumentText>(`/documents/${identifier}/text`),
 
+  documentSummary: (identifier: string) => request<GroundedSummary>(`/documents/${identifier}/summary`),
+
   facets: () => request<Facets>('/documents/facets'),
 
   search: (payload: {
@@ -413,6 +480,34 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ question, filters: options?.filters ?? {}, persist: false }),
     }),
+
+  /**
+   * Ask about one record only.
+   *
+   * `document_ids` is sent at the top level because that is the field the
+   * server scopes retrieval with; sending it nested under `filters` would be
+   * silently ignored and the answer would quietly come from the whole archive.
+   */
+  askAboutDocument: (question: string, documentId: string) =>
+    request<RagAnswer>('/rag/ask', {
+      method: 'POST',
+      body: JSON.stringify({
+        question,
+        document_ids: [documentId],
+        mode: 'grounded',
+        persist: false,
+      }),
+    }),
+
+  digitizeCapabilities: () => request<DigitizeCapabilities>('/digitize/capabilities'),
+
+  digitize: (file: File, options?: { title?: string; sourceLanguage?: string }) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (options?.title) form.append('title', options.title)
+    if (options?.sourceLanguage) form.append('source_language', options.sourceLanguage)
+    return request<DigitizeResult>('/digitize', { method: 'POST', body: form })
+  },
 
   timeline: (params?: { year_from?: number; year_to?: number; event_type?: string[]; limit?: number }) =>
     request<TimelineResponse>(`/timeline${query(params ?? {})}`),

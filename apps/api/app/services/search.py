@@ -43,6 +43,7 @@ KRRF = settings.rag_rrf_k
 class SearchFilters:
     languages: list[str] = field(default_factory=list)
     document_types: list[str] = field(default_factory=list)
+    document_ids: list[str] = field(default_factory=list)
     collection_ids: list[str] = field(default_factory=list)
     topic_ids: list[str] = field(default_factory=list)
     source_ids: list[str] = field(default_factory=list)
@@ -61,6 +62,7 @@ class SearchFilters:
         return {
             "languages": self.languages,
             "document_types": self.document_types,
+            "document_ids": self.document_ids,
             "collection_ids": self.collection_ids,
             "topic_ids": self.topic_ids,
             "source_ids": self.source_ids,
@@ -139,6 +141,8 @@ def _apply_filters(stmt: Select, filters: SearchFilters) -> Select:
         stmt = stmt.where(doc.language.in_(filters.languages))
     if filters.document_types:
         stmt = stmt.where(doc.document_type.in_(filters.document_types))
+    if filters.document_ids:
+        stmt = stmt.where(doc.id.in_(filters.document_ids))
     if filters.collection_ids:
         stmt = stmt.where(doc.collection_id.in_(filters.collection_ids))
     if filters.source_ids:

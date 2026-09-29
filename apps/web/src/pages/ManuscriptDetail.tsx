@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, type DocumentDetail, type DocumentText } from '../lib/api'
+import { api, type DocumentDetail, type GroundedSummary, type DocumentText } from '../lib/api'
+import { UnderstandInThirtySeconds } from '../components/UnderstandIn30Seconds'
 import {
   PAGE_UNAVAILABLE,
   ProvenanceWarning,
@@ -14,6 +15,7 @@ export function ManuscriptDetail() {
   const { slug = '' } = useParams()
   const [document, setDocument] = useState<DocumentDetail | null>(null)
   const [text, setText] = useState<DocumentText | null>(null)
+  const [summary, setSummary] = useState<GroundedSummary | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [loading, setLoading] = useState(true)
 
@@ -23,11 +25,19 @@ export function ManuscriptDetail() {
     setError(null)
     setDocument(null)
     setText(null)
-    Promise.all([api.document(slug), api.documentText(slug).catch(() => null)])
-      .then(([detail, textValue]) => {
+    setSummary(null)
+    Promise.all([
+      api.document(slug),
+      api.documentText(slug).catch(() => null),
+      // A record too thin to summarise returns an explained "unavailable"
+      // result rather than an error, so it is not caught here.
+      api.documentSummary(slug).catch(() => null),
+    ])
+      .then(([detail, textValue, summaryValue]) => {
         if (cancelled) return
         setDocument(detail)
         setText(textValue)
+        setSummary(summaryValue)
       })
       .catch((caught) => {
         if (!cancelled) setError(caught)
@@ -91,6 +101,16 @@ export function ManuscriptDetail() {
         </ProvenanceWarning>
       )}
 
+      {summary && (
+        <UnderstandInThirtySeconds
+          documentId={document.id}
+          documentTitle={document.title}
+          documentType={document.document_type}
+          summary={summary}
+          hasFullText={Boolean(text && text.parts.length > 0)}
+        />
+      )}
+
       {document.summary && (
         <section aria-labelledby="summary-heading">
           <h2 id="summary-heading" className="font-serif text-xl text-ink-900">
@@ -105,7 +125,7 @@ export function ManuscriptDetail() {
         </section>
       )}
 
-      <section aria-labelledby="text-heading" className="space-y-3">
+      <section id="stored-text" aria-labelledby="text-heading" className="space-y-3">
         <h2 id="text-heading" className="font-serif text-xl text-ink-900">
           Stored text
         </h2>

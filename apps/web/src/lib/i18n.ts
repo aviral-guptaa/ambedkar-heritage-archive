@@ -23,6 +23,7 @@ export const STRINGS = {
     'nav.graph': 'Knowledge Graph',
     'nav.media': 'Media',
     'nav.stories': 'Stories',
+    'nav.digitize': 'Digitise',
 
     'verification.verified': 'Checked against the original',
     'verification.secondary': 'Unverified secondary text',
@@ -78,6 +79,7 @@ export const STRINGS = {
     'nav.graph': 'ज्ञान ग्राफ',
     'nav.media': 'माध्यम',
     'nav.stories': 'कथाएँ',
+    'nav.digitize': 'डिजिटाइज़',
 
     'verification.verified': 'मूल के साथ सत्यापित',
     'verification.secondary': 'असत्यापित द्वितीयक पाठ',
@@ -133,6 +135,7 @@ export const STRINGS = {
     'nav.graph': 'ज्ञानसंबंधी आलेख',
     'nav.media': 'माध्यमे',
     'nav.stories': 'कथा',
+    'nav.digitize': 'डिजिटाइझ',
 
     'verification.verified': 'मूळाशी सत्यापित',
     'verification.secondary': 'असत्यापित द्वितीयक मजकूर',

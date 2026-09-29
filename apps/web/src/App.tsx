@@ -7,6 +7,7 @@ import { Manuscripts } from './pages/Manuscripts'
 import { ManuscriptDetail } from './pages/ManuscriptDetail'
 import { Timeline } from './pages/Timeline'
 import { Media } from './pages/Media'
+import { Digitize } from './pages/Digitize'
 import { KnowledgeGraph, NotFoundPage, Stories } from './pages/Placeholders'
 import { AdminApp } from './AdminApp'
 
@@ -20,6 +21,7 @@ export function App() {
         <Route path="explore" element={<Explore />} />
         <Route path="ai-research" element={<AiResearch />} />
         <Route path="manuscripts" element={<Manuscripts />} />
+        <Route path="digitize" element={<Digitize />} />
         <Route path="manuscripts/:slug" element={<ManuscriptDetail />} />
         <Route path="timeline" element={<Timeline />} />
         <Route path="knowledge-graph" element={<KnowledgeGraph />} />

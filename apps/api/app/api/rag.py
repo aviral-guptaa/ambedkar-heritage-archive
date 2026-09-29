@@ -49,6 +49,7 @@ def _service_request(payload: RagRequest, principal) -> ServiceRequest:
         filters=SearchFilters(
             languages=payload.languages,
             document_types=payload.document_types,
+            document_ids=payload.document_ids,
             collection_ids=[],
             topic_ids=[],
             person_ids=[],

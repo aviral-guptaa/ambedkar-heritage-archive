@@ -326,6 +326,20 @@ def get_document(identifier: str, db: DbSession, principal: CurrentPrincipal) ->
     )
 
 
+@router.get("/{identifier}/summary", summary="Grounded 30-second understanding")
+def document_summary(identifier: str, db: DbSession, principal: CurrentPrincipal) -> dict[str, Any]:
+    """Summarise one record using only that record's own indexed text.
+
+    Extractive, not generated: every line is a sentence the archive already
+    holds, so this needs no model and cannot introduce a fact, date, or
+    quotation the record does not contain.
+    """
+    from app.services.docsummary import build_summary
+
+    doc = _load_document(db, identifier, principal)
+    return build_summary(db, doc)
+
+
 @router.get("/{identifier}/pages", response_model=list[PageResponse], summary="Page images and text")
 def get_pages(
     identifier: str, db: DbSession, principal: CurrentPrincipal
